@@ -1,0 +1,87 @@
+install.packages("tidyverse")
+install.packages("tidymodels")
+install.packages("dplyr")
+install.packages("ggplot2")
+install.packages("recipe")
+------------------------------------------------------------------------------
+library("tidyverse")
+library("tidymodels")
+library("dplyr")
+library("ggplot2")
+library("recipe")
+
+#EDA
+glimpse(train_case1)
+train_case1 %>% count(NMSATKER, sort = TRUE)
+train_case1 %>% count(NMKEGIATAN, sort = TRUE)
+train_case1 %>% count(JENISBELANJA, sort = TRUE)
+summary(train_case1)
+
+#change character to factor for classification models
+train_case1 %>% mutate_if(is.character, factor)
+
+#model preparation
+tree_prep <- prep(tree_recipe)
+juicedd <- juice(tree_prep)
+-----------------------------------------------------------------------------
+
+tree_recipe <- recipe(REALISASI ~ ., data = train_case1) %>% 
+update_role(ANGGARANID, new_role = "ID") %>% 
+step_other(NMDEPT, NMKEGIATAN, JENISBELANJA, threshold = 0.01) %>% 
+step_other(NMSATKER, threshold = 0.003) %>% 
+step_dummy(all_nominal(), -all_outcomes()) %>% 
+step_downsample(NMDEPT) %>% 
+step_downsample(JENISBELANJA)
+-----------------------------------------------------------------------------
+
+#model random forest
+rand <- rand_forest(mtry = tune(), trees = 1000, min_n = tune()) %>% 
+set_mode("classification") %>% 
+set_engine("ranger")
+
+#Create workflow for hyperparameter tuning
+tune_rand <- workflow() %>% 
+add_recipe(tree_recipe) %>% 
+add_model(rand)
+
+#as always 5 cv without stratified sampling
+set.seed(1234)
+trees_fold <- vfold_cv(train_case1)
+
+#Hyperparameter tuning
+doParallel::registerDoParalle()
+set.seed(123)
+
+#tune Workflow
+tun_res <- tune_grid(tune_wf, resamples = trees_fold, grid = 50)
+
+#tune recipe model
+tun_res <- tune_grid(tune_rand, resamples = trees_fold, grid = 50)
+
+#select the best model (minimum loss function)
+tun_res %>%
+collect.metrics() %>%
+filter(.metric = "roc_auc")
+
+regular_res %>% tune_grid(
+	tune_wf, 
+	resamples = trees_fold
+	grid = rf.grid
+)
+
+
+best_auc <- select_best(regular_res, "roc_auc")
+
+finalize_model(tune_spec,
+		best_auc
+) 
+
+final_wf <- workflow() %>%
+	add.recipe(tree_recipe) %>%
+	add.model(final_rf)
+
+final_res <- final_wf
+	last_fit(trees_split)
+
+final_res %>% 
+	collect.metrics()
